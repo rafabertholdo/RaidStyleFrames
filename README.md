@@ -1,5 +1,7 @@
 # Raid Style Frames
 
+![logo](media/logo.png)
+
 Replaces the default player and target frames with Blizzard's own raid-style (compact) frames: no portrait, no level, just the raid frame look. WoW Classic Era.
 
 - Size, border and power bar follow your Raid Frame settings
