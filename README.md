@@ -9,3 +9,5 @@ Replaces the default player, target and target-of-target frames with Blizzard's 
 - Target of target frame
 - Buffs inside the frame, debuffs in a row below (with type-colored border and cooldown swipe)
 - Move with Edit Mode or Shift+drag
+
+![Player and target frames](media/screenshot.png)
