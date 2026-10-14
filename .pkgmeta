@@ -1,0 +1,4 @@
+package-as: RaidStyleFrames
+
+ignore:
+  - README.md
