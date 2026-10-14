@@ -3,5 +3,5 @@
 ## Notes: Replaces the player and target frames with Blizzard raid-style frames. Move in Edit Mode or with Shift+drag.
 ## Author: rafabertholdo
 ## Version: @project-version@
-## X-Curse-Project-ID: 0
+## X-Curse-Project-ID: 1744563
 RaidStyleFrames.lua
