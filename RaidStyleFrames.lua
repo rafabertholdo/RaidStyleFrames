@@ -164,11 +164,37 @@ local function layout(f)
 	end
 end
 
+-- Target level in the top-right corner, colored like Blizzard's target frame
+target.level = target:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+target.level:SetPoint("TOPRIGHT", -3, -3)
+local function updateLevel()
+	local unit, text = target.unit
+	target.level:SetShown(RaidStyleFramesDB.level and UnitExists(unit))
+	if target.level:IsShown() then
+		local level = UnitLevel(unit)
+		local elite = UnitClassification(unit)
+		local color = UNIT_LEVEL_NON_ATTACKABLE
+		if UnitCanAttack("player", unit) then color = GetCreatureDifficultyColor(level > 0 and level or 999) end
+		text = (level > 0 and level or "??") .. ((elite == "elite" or elite == "rareelite" or elite == "worldboss") and "+" or "")
+		target.level:SetText(text)
+		target.level:SetTextColor(color.r, color.g, color.b)
+	end
+	-- Keep the name clear of it (only the default layout anchors the name to the right edge)
+	if EditModeManagerFrame:GetRaidFrameAuraOrganizationType(target.groupType) == Enum.RaidAuraOrganizationType.Legacy then
+		if target.level:IsShown() then
+			target.name:SetPoint("TOPRIGHT", target.level, "TOPLEFT", -2, 0)
+		else
+			target.name:SetPoint("TOPRIGHT", -3, -3)
+		end
+	end
+end
+
 local function refresh()
 	for _, f in ipairs({ player, target }) do
 		layout(f)
 		updateAuras(f)
 	end
+	updateLevel()
 end
 
 for _, f in ipairs({ player, target }) do
@@ -210,6 +236,7 @@ EventRegistry:RegisterCallback("EditMode.Enter", function()
 		f:Show()
 	end
 	updateAuras(target)
+	updateLevel()
 end, player)
 EventRegistry:RegisterCallback("EditMode.Exit", function()
 	player.editHighlight:Hide()
@@ -219,6 +246,7 @@ EventRegistry:RegisterCallback("EditMode.Exit", function()
 		RegisterUnitWatch(f)
 	end
 	updateAuras(target)
+	updateLevel()
 end, player)
 
 -- Options in Esc > Options > AddOns
@@ -253,6 +281,7 @@ local function createOptions()
 		o:SetLabelFormatter(MinimalSliderWithSteppersMixin.Label.Right)
 		return o
 	end
+	add("level", "boolean", "Show target level", true, "Level on the target frame, colored by difficulty. \"+\" means elite.")
 	add("iconSizeInside", "number", "Icon size (inside)", 11, "Size of buffs/debuffs placed inside the frame.", sizes(8, 30))
 	add("iconSize", "number", "Icon size (outside)", 22, "Size of buffs/debuffs placed below or above the frame.", sizes(12, 48))
 	Settings.RegisterAddOnCategory(category)
@@ -267,11 +296,16 @@ ev:SetScript("OnEvent", function(self, event, unit)
 		updateAuras(target)
 		return
 	end
+	if event == "UNIT_LEVEL" then
+		updateLevel()
+		return
+	end
 	if event == "PLAYER_TARGET_CHANGED" then
 		if target.unit == "target" then
 			CompactUnitFrame_UpdateAll(target)
 			target:UpdatePrivateAuras(true) -- aura display only listens to UNIT_AURA, so rebuild it for the new target
 			updateAuras(target)
+			updateLevel()
 		end
 		return
 	end
@@ -283,5 +317,6 @@ ev:SetScript("OnEvent", function(self, event, unit)
 	setup()
 	self:RegisterEvent("PLAYER_TARGET_CHANGED") -- compact frames don't refresh on a new target by themselves
 	self:RegisterUnitEvent("UNIT_AURA", "player", "target")
+	self:RegisterUnitEvent("UNIT_LEVEL", "player", "target") -- player too: the color is relative to your level
 	refresh()
 end)
