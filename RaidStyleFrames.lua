@@ -43,7 +43,23 @@ local function makeSetup(options)
 	return function(frame)
 		DefaultCompactUnitFrameSetup(frame)
 		CompactUnitFrame_SetOptionTable(frame, options)
-		CompactUnitFrame_SetMaxDebuffs(frame, 0) -- debuffs go in our row below the frame instead
+		-- Always show power: the raid "Display Power Bars" setting (per character, off by default) shouldn't hide it here.
+		-- ponytail: mirrors DefaultCompactUnitFrameSetup's power bar layout; re-check if Blizzard changes it
+		if frame.powerBar and not frame.powerBar:IsShown() then
+			local border = EditModeManagerFrame:ShouldRaidFrameDisplayBorder(frame.groupType)
+			frame.powerBar:GetStatusBarTexture():SetDrawLayer("BORDER")
+			frame.powerBar:SetPoint("TOPLEFT", frame.healthBar, "BOTTOMLEFT", 0, border and -2 or 0)
+			frame.powerBar:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -1, 1)
+			frame.powerBar:Show()
+			frame.powerBarUsedHeight = 8
+			frame.healthBar:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -1, 9)
+			frame.TempMaxHealthLoss:SetShouldAdjustHealthBarAnchor(-1, 9)
+			frame:SetPowerBarUsedHeight(8) -- buffs sit above the power bar
+			frame:UpdatePrivateAuras(true)
+		end
+		-- auras go in our own rows instead, so they can be placed inside/below/above
+		CompactUnitFrame_SetMaxDebuffs(frame, 0)
+		CompactUnitFrame_SetMaxBuffs(frame, 0)
 	end
 end
 local playerSetup = makeSetup(CopyTable(DefaultCompactUnitFrameOptions))
@@ -53,18 +69,18 @@ targetOptions.allowClassColorsForNPCs = false
 targetOptions.colorHealthBySelection = true
 local targetSetup = makeSetup(targetOptions)
 
--- Debuff row below the frame (Blizzard's aura layout is fixed inside the frame)
-local MAX_DEBUFFS, ICON = 8, 22
-local function addDebuffRow(f)
-	f.debuffs = {}
-	for i = 1, MAX_DEBUFFS do
-		local b = CreateFrame("Frame", nil, f)
-		b:SetSize(ICON, ICON)
-		b:SetPoint("TOPLEFT", f, "BOTTOMLEFT", (i - 1) * (ICON + 3) + 1, -3)
+-- Buff and debuff rows, placed inside, below or above the frame (Blizzard's aura layout is fixed inside)
+local MAX_AURAS, GAP = 8, 3
+local function addRow(f, key, filter)
+	local row = CreateFrame("Frame", nil, f)
+	row:SetFrameLevel(f:GetFrameLevel() + 5) -- over the health bar when inside
+	row.key, row.filter, row.max = key, filter, MAX_AURAS
+	for i = 1, MAX_AURAS do
+		local b = CreateFrame("Frame", nil, row)
 		b.border = b:CreateTexture(nil, "BACKGROUND")
 		b.border:SetPoint("TOPLEFT", -1, 1)
 		b.border:SetPoint("BOTTOMRIGHT", 1, -1)
-		b.border:SetColorTexture(1, 1, 1) -- tinted per debuff type
+		b.border:SetColorTexture(0, 0, 0) -- debuffs get tinted per type
 		b.icon = b:CreateTexture(nil, "ARTWORK")
 		b.icon:SetAllPoints()
 		b.icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
@@ -76,31 +92,77 @@ local function addDebuffRow(f)
 		b:EnableMouse(true)
 		b:SetScript("OnEnter", function(self)
 			GameTooltip:SetOwner(self, "ANCHOR_BOTTOMRIGHT")
-			GameTooltip:SetUnitDebuff(f.unit, self.index)
+			GameTooltip:SetUnitAura(f.unit, self.index, filter)
 		end)
 		b:SetScript("OnLeave", GameTooltip_Hide)
 		b:Hide()
-		f.debuffs[i] = b
+		row[i] = b
 	end
+	f.auraRows = f.auraRows or {}
+	table.insert(f.auraRows, row)
 end
 
-local function updateDebuffs(f)
-	for i, b in ipairs(f.debuffs) do
-		local aura = f.unit and C_UnitAuras.GetAuraDataByIndex(f.unit, i, "HARMFUL")
-		if aura then
-			b.index = i
-			b.icon:SetTexture(aura.icon)
-			b.count:SetText(aura.applications > 1 and aura.applications or "")
-			AuraUtil.SetAuraBorderColor(b.border, aura.dispelName) -- same colors as Blizzard's target debuffs
-			CooldownFrame_Set(b.cd, aura.expirationTime - aura.duration, aura.duration, aura.duration > 0, true)
-			b:Show()
-		else
-			b:Hide()
+local function updateAuras(f)
+	for _, row in ipairs(f.auraRows) do
+		for i, b in ipairs(row) do
+			local aura = i <= row.max and f.unit and C_UnitAuras.GetAuraDataByIndex(f.unit, i, row.filter)
+			if aura then
+				b.index = i
+				b.icon:SetTexture(aura.icon)
+				b.count:SetText(aura.applications > 1 and aura.applications or "")
+				if row.filter == "HARMFUL" then
+					AuraUtil.SetAuraBorderColor(b.border, aura.dispelName) -- same colors as Blizzard's target debuffs
+				end
+				CooldownFrame_Set(b.cd, aura.expirationTime - aura.duration, aura.duration, aura.duration > 0, true)
+				b:Show()
+			else
+				b:Hide()
+			end
 		end
 	end
 end
-addDebuffRow(player)
-addDebuffRow(target)
+
+-- Rows sharing a position stack as separate lines: buffs nearest the frame, then debuffs
+local function layout(f)
+	local lines = { inside = 0, below = 0, above = 0 }
+	for _, row in ipairs(f.auraRows) do
+		local pos = RaidStyleFramesDB[row.key .. "Pos"]
+		row:SetShown(RaidStyleFramesDB[row.key])
+		if row:IsShown() then
+			local n = lines[pos]
+			lines[pos] = n + 1
+			local size, gap = RaidStyleFramesDB.iconSize, GAP
+			row.max = MAX_AURAS
+			row:ClearAllPoints()
+			if pos == "inside" then -- as many as fit across
+				size, gap = RaidStyleFramesDB.iconSizeInside, 1
+				row.max = min(MAX_AURAS, floor((f:GetWidth() - 6 + gap) / (size + gap)))
+				row:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", 3, 2 + (f.powerBarUsedHeight or 0) + n * (size + gap))
+			elseif pos == "above" then
+				row:SetPoint("BOTTOMLEFT", f, "TOPLEFT", 1, gap + n * (size + gap))
+			else
+				row:SetPoint("TOPLEFT", f, "BOTTOMLEFT", 1, -gap - n * (size + gap))
+			end
+			row:SetSize(1, size)
+			for i, b in ipairs(row) do
+				b:SetSize(size, size)
+				b:SetPoint("TOPLEFT", row, "TOPLEFT", (i - 1) * (size + gap), 0)
+			end
+		end
+	end
+end
+
+local function refresh()
+	for _, f in ipairs({ player, target }) do
+		layout(f)
+		updateAuras(f)
+	end
+end
+
+for _, f in ipairs({ player, target }) do
+	addRow(f, "buffs", "HELPFUL")
+	addRow(f, "debuffs", "HARMFUL")
+end
 
 local function setup()
 	CompactUnitFrame_SetUpFrame(player, playerSetup)
@@ -135,7 +197,7 @@ EventRegistry:RegisterCallback("EditMode.Enter", function()
 		CompactUnitFrame_SetUnit(f, "player")
 		f:Show()
 	end
-	updateDebuffs(target)
+	updateAuras(target)
 end, player)
 EventRegistry:RegisterCallback("EditMode.Exit", function()
 	player.editHighlight:Hide()
@@ -144,22 +206,60 @@ EventRegistry:RegisterCallback("EditMode.Exit", function()
 		CompactUnitFrame_SetUnit(f, unit)
 		RegisterUnitWatch(f)
 	end
-	updateDebuffs(target)
+	updateAuras(target)
 end, player)
+
+-- Options in Esc > Options > AddOns
+local function createOptions()
+	RaidStyleFramesDB = RaidStyleFramesDB or {}
+	local category = Settings.RegisterVerticalLayoutCategory("Raid Style Frames")
+	local function add(key, varType, name, default, tooltip, options)
+		if RaidStyleFramesDB[key] == nil then RaidStyleFramesDB[key] = default end
+		local setting = Settings.RegisterAddOnSetting(category, "RaidStyleFrames_" .. key, key, RaidStyleFramesDB, varType, name, default)
+		setting:SetValueChangedCallback(refresh)
+		if varType == "number" then
+			Settings.CreateSlider(category, setting, options, tooltip)
+		elseif options then
+			Settings.CreateDropdown(category, setting, options, tooltip)
+		else
+			Settings.CreateCheckbox(category, setting, tooltip)
+		end
+	end
+	local function positions()
+		local c = Settings.CreateControlTextContainer()
+		c:Add("inside", "Inside")
+		c:Add("below", "Below")
+		c:Add("above", "Above")
+		return c:GetData()
+	end
+	add("buffs", "boolean", "Show buffs", true, "Buff icons on the player and target frames.")
+	add("buffsPos", "string", "Buff position", "inside", "Where buffs go. Sharing a position with debuffs puts them on separate lines.", positions)
+	add("debuffs", "boolean", "Show debuffs", true, "Debuff icons on the player and target frames.")
+	add("debuffsPos", "string", "Debuff position", "below", "Where debuffs go. Sharing a position with buffs puts them on separate lines.", positions)
+	local function sizes(min, max)
+		local o = Settings.CreateSliderOptions(min, max, 1)
+		o:SetLabelFormatter(MinimalSliderWithSteppersMixin.Label.Right)
+		return o
+	end
+	add("iconSizeInside", "number", "Icon size (inside)", 11, "Size of buffs/debuffs placed inside the frame.", sizes(8, 30))
+	add("iconSize", "number", "Icon size (outside)", 22, "Size of buffs/debuffs placed below or above the frame.", sizes(12, 48))
+	Settings.RegisterAddOnCategory(category)
+end
 
 local ev = CreateFrame("Frame")
 ev:RegisterEvent("PLAYER_LOGIN")
 ev:SetScript("OnEvent", function(self, event, unit)
+	if event == "PLAYER_LOGIN" then createOptions() end
 	if event == "UNIT_AURA" then
-		updateDebuffs(player)
-		updateDebuffs(target)
+		updateAuras(player)
+		updateAuras(target)
 		return
 	end
 	if event == "PLAYER_TARGET_CHANGED" then
 		if target.unit == "target" then
 			CompactUnitFrame_UpdateAll(target)
 			target:UpdatePrivateAuras(true) -- aura display only listens to UNIT_AURA, so rebuild it for the new target
-			updateDebuffs(target)
+			updateAuras(target)
 		end
 		return
 	end
@@ -171,6 +271,5 @@ ev:SetScript("OnEvent", function(self, event, unit)
 	setup()
 	self:RegisterEvent("PLAYER_TARGET_CHANGED") -- compact frames don't refresh on a new target by themselves
 	self:RegisterUnitEvent("UNIT_AURA", "player", "target")
-	updateDebuffs(player)
-	updateDebuffs(target)
+	refresh()
 end)

@@ -4,4 +4,5 @@
 ## Author: rafabertholdo
 ## Version: @project-version@
 ## X-Curse-Project-ID: 1744563
+## SavedVariables: RaidStyleFramesDB
 RaidStyleFrames.lua
