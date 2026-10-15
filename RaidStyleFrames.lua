@@ -39,7 +39,10 @@ local watched = { [target] = "target", [tot] = "targettarget" }
 -- Own option tables with no re-layout on every update: the default re-layout calls SetSize,
 -- which is blocked in combat on addon frames, and would put the in-frame debuffs back
 local function makeSetup(options)
-	options.updateAllSetupFunc = nil
+	-- Read through to Blizzard's live raid options (filled from CVars like "Display Class Colors" after load),
+	-- a copy made now would miss them
+	setmetatable(options, { __index = DefaultCompactUnitFrameOptions })
+	options.updateAllSetupFunc = false -- false, not nil, so it doesn't fall through to Blizzard's
 	return function(frame)
 		DefaultCompactUnitFrameSetup(frame)
 		CompactUnitFrame_SetOptionTable(frame, options)
@@ -62,12 +65,21 @@ local function makeSetup(options)
 		CompactUnitFrame_SetMaxBuffs(frame, 0)
 	end
 end
-local playerSetup = makeSetup(CopyTable(DefaultCompactUnitFrameOptions))
--- Target: color NPCs by reaction (red/yellow/green) instead of their class
-local targetOptions = CopyTable(DefaultCompactUnitFrameOptions)
-targetOptions.allowClassColorsForNPCs = false
-targetOptions.colorHealthBySelection = true
-local targetSetup = makeSetup(targetOptions)
+local playerSetup = makeSetup({})
+-- Target: raid coloring (class or custom color for friends, red for anything else), but never class-color NPCs
+local targetSetup = makeSetup({ allowClassColorsForNPCs = false })
+
+-- Recolor when "Display Class Colors" or its color pickers change; next frame so Blizzard has updated its options first
+local function recolor()
+	C_Timer.After(0, function()
+		for _, f in ipairs({ player, target, tot }) do
+			if f.unit and UnitExists(f.unit) then CompactUnitFrame_UpdateHealthColor(f) end
+		end
+	end)
+end
+for _, cvar in ipairs({ "raidFramesDisplayClassColor", "raidFramesHealthBarColor", "raidFramesHealthBarColorBG" }) do
+	CVarCallbackRegistry:RegisterCallback(cvar, recolor, cvar) -- owner per cvar: one owner can only hold one callback per event
+end
 
 -- Buff and debuff rows, placed inside, below or above the frame (Blizzard's aura layout is fixed inside)
 local MAX_AURAS, GAP = 8, 3
