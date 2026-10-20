@@ -96,10 +96,7 @@ local function addRow(f, key, filter)
 		b.icon = b:CreateTexture(nil, "ARTWORK")
 		b.icon:SetAllPoints()
 		b.icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
-		b.cd = CreateFrame("Cooldown", nil, b, "CooldownFrameTemplate")
-		b.cd:SetAllPoints()
-		b.cd:SetHideCountdownNumbers(true) -- swipe only, numbers cover the tiny icons
-		b.count = b.cd:CreateFontString(nil, "OVERLAY", "NumberFontNormalSmall") -- on the cooldown so the swipe doesn't cover it
+		b.count = b:CreateFontString(nil, "OVERLAY", "NumberFontNormalSmall")
 		b.count:SetPoint("BOTTOMRIGHT", 2, -1)
 		b:EnableMouse(true)
 		b:SetScript("OnEnter", function(self)
@@ -125,7 +122,6 @@ local function updateAuras(f)
 				if row.filter == "HARMFUL" then
 					AuraUtil.SetAuraBorderColor(b.border, aura.dispelName) -- same colors as Blizzard's target debuffs
 				end
-				CooldownFrame_Set(b.cd, aura.expirationTime - aura.duration, aura.duration, aura.duration > 0, true)
 				b:Show()
 			else
 				b:Hide()
