@@ -1,4 +1,4 @@
-## Interface: 11509
+## Interface: 11509, 16001
 ## Title: Raid Style Frames
 ## Notes: Replaces the player and target frames with Blizzard raid-style frames. Move in Edit Mode or with Shift+drag.
 ## Author: rafabertholdo

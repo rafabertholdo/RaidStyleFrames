@@ -1,4 +1,7 @@
 -- Uses Blizzard's own CompactUnitFrame, so it looks and follows settings exactly like the raid frames.
+-- WoW Forever has secret values (health, auras): our frames run Blizzard's code tainted, and tainted code
+-- can't compare secrets. Classic Era (1.15) has issecretvalue but no secret health, so key off the version.
+local hasSecrets = select(4, GetBuildInfo()) >= 16000
 local hidden = CreateFrame("Frame")
 hidden:Hide()
 
@@ -9,6 +12,11 @@ holder:SetAllPoints()
 local function create(name, x, y, template)
 	local f = CreateFrame("Button", name, holder, template)
 	f.groupType = CompactRaidGroupTypeEnum.Raid -- size/border come from the raid frame settings
+	-- Flat bars: the raid fill textures are shaded at the edges; health/power colors still tint the plain texture
+	f.healthBar:SetStatusBarTexture("Interface\\Buttons\\WHITE8x8")
+	f.powerBar:SetStatusBarTexture("Interface\\Buttons\\WHITE8x8")
+	f.powerBar.background:SetColorTexture(0, 0, 0, 0.8)
+	f.background:SetTexture("Interface\\Buttons\\WHITE8x8") -- still tinted by the raid "background color" setting
 	f:SetPoint("CENTER", UIParent, "CENTER", x, y) -- default spot; ignored once user-placed
 	f:SetMovable(true)
 	f:SetClampedToScreen(true)
@@ -41,10 +49,17 @@ local watched = { [target] = "target", [tot] = "targettarget" }
 local function makeSetup(options)
 	-- Read through to Blizzard's live raid options (filled from CVars like "Display Class Colors" after load),
 	-- a copy made now would miss them
-	setmetatable(options, { __index = DefaultCompactUnitFrameOptions })
+	setmetatable(options, { __index = function(_, k)
+		local v = DefaultCompactUnitFrameOptions[k]
+		-- "perc" and "losthealth" do math on secret health; fall back to the plain number
+		if hasSecrets and k == "healthText" and (v == "perc" or v == "losthealth") then return "health" end
+		return v
+	end })
 	options.updateAllSetupFunc = false -- false, not nil, so it doesn't fall through to Blizzard's
+	options.fadeOutOfRange = false -- UnitInRange is secret on Forever, and only works for group members anyway
 	return function(frame)
 		DefaultCompactUnitFrameSetup(frame)
+		frame.updateAllSetupFunc = nil -- Forever keeps the re-layout on the frame (Era on the option table above)
 		CompactUnitFrame_SetOptionTable(frame, options)
 		-- Always show power: the raid "Display Power Bars" setting (per character, off by default) shouldn't hide it here.
 		-- ponytail: mirrors DefaultCompactUnitFrameSetup's power bar layout; re-check if Blizzard changes it
@@ -59,6 +74,17 @@ local function makeSetup(options)
 			frame.TempMaxHealthLoss:SetShouldAdjustHealthBarAnchor(-1, 9)
 			frame:SetPowerBarUsedHeight(8) -- buffs sit above the power bar
 			frame:UpdatePrivateAuras(true)
+		end
+		if hasSecrets then
+			-- Heal prediction compares secret health before checking any option; "max 0" makes it bail out early.
+			-- ponytail: no incoming-heal/absorb overlay on Forever; would need UnitHealPredictionCalculator to add back
+			frame.healthBar.GetMinMaxValues = function() return 0, 0 end
+			-- Bailing early also skips Blizzard's hiding of the heal/absorb textures, which are shown by default:
+			-- the over-absorb glows sit on both ends of the health bar
+			for _, key in ipairs({ "myHealPrediction", "otherHealPrediction", "totalAbsorb", "totalAbsorbOverlay", "TotalAbsorbLeftShadow",
+				"overAbsorbGlow", "myHealAbsorb", "myHealAbsorbOverlay", "myHealAbsorbLeftShadow", "myHealAbsorbRightShadow", "overHealAbsorbGlow" }) do
+				if frame[key] then frame[key]:Hide() end
+			end
 		end
 		-- auras go in our own rows instead, so they can be placed inside/below/above
 		CompactUnitFrame_SetMaxDebuffs(frame, 0)
@@ -114,13 +140,20 @@ end
 local function updateAuras(f)
 	for _, row in ipairs(f.auraRows) do
 		for i, b in ipairs(row) do
-			local aura = i <= row.max and f.unit and C_UnitAuras.GetAuraDataByIndex(f.unit, i, row.filter)
+			-- pcall: Forever throws (instead of returning secrets) for units whose auras addons may not read, like enemies
+			local ok, aura = i <= row.max and f.unit and pcall(C_UnitAuras.GetAuraDataByIndex, f.unit, i, row.filter)
+			aura = ok and aura
 			if aura then
 				b.index = i
 				b.icon:SetTexture(aura.icon)
-				b.count:SetText(aura.applications > 1 and aura.applications or "")
+				if hasSecrets then -- secret-safe: returns "" below 2 stacks
+					b.count:SetText(C_UnitAuras.GetAuraApplicationDisplayCount(f.unit, aura.auraInstanceID))
+				else
+					b.count:SetText(aura.applications > 1 and aura.applications or "")
+				end
 				if row.filter == "HARMFUL" then
-					AuraUtil.SetAuraBorderColor(b.border, aura.dispelName) -- same colors as Blizzard's target debuffs
+					-- ponytail: black border when the type is secret; C_UnitAuras.GetAuraDispelTypeColor + a color curve if that matters
+					AuraUtil.SetAuraBorderColor(b.border, not (hasSecrets and issecretvalue(aura.dispelName)) and aura.dispelName or nil) -- same colors as Blizzard's target debuffs
 				end
 				b:Show()
 			else
