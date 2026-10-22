@@ -194,6 +194,21 @@ local function layout(f)
 	end
 end
 
+-- Raid target marker (skull, cross...) straddling the top edge, like Blizzard's target frame.
+-- Own frame so it draws over the health bar
+local marker = CreateFrame("Frame", nil, target)
+marker:SetFrameLevel(target:GetFrameLevel() + 6)
+marker:SetSize(18, 18)
+marker:SetPoint("CENTER", target, "TOP", 0, 0)
+marker.icon = marker:CreateTexture(nil, "OVERLAY")
+marker.icon:SetAllPoints()
+marker.icon:SetTexture("Interface\\TargetingFrame\\UI-RaidTargetingIcons")
+local function updateMarker()
+	local index = UnitExists(target.unit) and GetRaidTargetIndex(target.unit)
+	if index then SetRaidTargetIconTexture(marker.icon, index) end
+	marker:SetShown(index and true or false)
+end
+
 -- Target level in the top-right corner, colored like Blizzard's target frame
 target.level = target:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
 target.level:SetPoint("TOPRIGHT", -3, -3)
@@ -217,6 +232,7 @@ local function updateLevel()
 			target.name:SetPoint("TOPRIGHT", -3, -3)
 		end
 	end
+	updateMarker() -- same refresh points: target change, edit mode, options
 end
 
 local function refresh()
@@ -330,6 +346,10 @@ ev:SetScript("OnEvent", function(self, event, unit)
 		updateLevel()
 		return
 	end
+	if event == "RAID_TARGET_UPDATE" then
+		updateMarker()
+		return
+	end
 	if event == "PLAYER_TARGET_CHANGED" then
 		if target.unit == "target" then
 			CompactUnitFrame_UpdateAll(target)
@@ -348,5 +368,6 @@ ev:SetScript("OnEvent", function(self, event, unit)
 	self:RegisterEvent("PLAYER_TARGET_CHANGED") -- compact frames don't refresh on a new target by themselves
 	self:RegisterUnitEvent("UNIT_AURA", "player", "target")
 	self:RegisterUnitEvent("UNIT_LEVEL", "player", "target") -- player too: the color is relative to your level
+	self:RegisterEvent("RAID_TARGET_UPDATE")
 	refresh()
 end)
