@@ -141,9 +141,10 @@ local function updateAuras(f)
 	for _, row in ipairs(f.auraRows) do
 		for i, b in ipairs(row) do
 			-- pcall: Forever throws (instead of returning secrets) for units whose auras addons may not read, like enemies
-			local ok, aura = i <= row.max and f.unit and pcall(C_UnitAuras.GetAuraDataByIndex, f.unit, i, row.filter)
-			aura = ok and aura
-			if aura then
+			-- (not "x and pcall(...)": "and" keeps only pcall's first result, so aura would always be nil)
+			local ok, aura = false, nil
+			if i <= row.max and f.unit then ok, aura = pcall(C_UnitAuras.GetAuraDataByIndex, f.unit, i, row.filter) end
+			if ok and aura then
 				b.index = i
 				b.icon:SetTexture(aura.icon)
 				if hasSecrets then -- secret-safe: returns "" below 2 stacks
