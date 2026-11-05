@@ -205,8 +205,11 @@ marker.icon:SetAllPoints()
 marker.icon:SetTexture("Interface\\TargetingFrame\\UI-RaidTargetingIcons")
 local function updateMarker()
 	local index = UnitExists(target.unit) and GetRaidTargetIndex(target.unit)
-	if index then SetRaidTargetIconTexture(marker.icon, index) end
-	marker:SetShown(index and true or false)
+	-- Forever: a marked target's index is secret and can't be tested (no marker is plain nil),
+	-- but the sprite sheet takes secrets, so a secret just means "marked"
+	local isSecret = hasSecrets and issecretvalue(index)
+	if isSecret or index then SetRaidTargetIconTexture(marker.icon, index) end
+	marker:SetShown(isSecret or index and true or false)
 end
 
 -- Target level in the top-right corner, colored like Blizzard's target frame
