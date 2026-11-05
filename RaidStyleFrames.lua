@@ -34,6 +34,14 @@ local function create(name, x, y, template)
 	f.editHighlight:SetAllPoints()
 	f.editHighlight:SetColorTexture(0.2, 0.6, 1, 0.35)
 	f.editHighlight:Hide()
+
+	-- Blizzard's update sets attributes on this secure frame, blocked in combat from our tainted code.
+	-- Only the unit changes what it does, so PLAYER_REGEN_ENABLED catches up. Don't wrap Show/Hide this
+	-- way: RegisterUnitWatch's secure driver calls them through the frame
+	local updatePrivateAuras = f.UpdatePrivateAuras
+	f.UpdatePrivateAuras = function(...)
+		if not InCombatLockdown() then return updatePrivateAuras(...) end
+	end
 	return f
 end
 
@@ -109,29 +117,58 @@ end
 
 -- Buff and debuff rows, placed inside, below or above the frame (Blizzard's aura layout is fixed inside)
 local MAX_AURAS, GAP = 8, 3
+local function iconParts(b)
+	local border = b:CreateTexture(nil, "BACKGROUND")
+	border:SetPoint("TOPLEFT", -1, 1)
+	border:SetPoint("BOTTOMRIGHT", 1, -1)
+	border:SetColorTexture(0, 0, 0) -- debuffs get tinted per type
+	local icon = b:CreateTexture(nil, "ARTWORK")
+	icon:SetAllPoints()
+	icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+	local count = b:CreateFontString(nil, "OVERLAY", "NumberFontNormalSmall")
+	count:SetPoint("BOTTOMRIGHT", 2, -1)
+	return border, icon, count
+end
+
+local AURA_GROUP = "auras"
 local function addRow(f, key, filter)
 	local row = CreateFrame("Frame", nil, f)
 	row:SetFrameLevel(f:GetFrameLevel() + 5) -- over the health bar when inside
 	row.key, row.filter, row.max = key, filter, MAX_AURAS
-	for i = 1, MAX_AURAS do
-		local b = CreateFrame("Frame", nil, row)
-		b.border = b:CreateTexture(nil, "BACKGROUND")
-		b.border:SetPoint("TOPLEFT", -1, 1)
-		b.border:SetPoint("BOTTOMRIGHT", 1, -1)
-		b.border:SetColorTexture(0, 0, 0) -- debuffs get tinted per type
-		b.icon = b:CreateTexture(nil, "ARTWORK")
-		b.icon:SetAllPoints()
-		b.icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
-		b.count = b:CreateFontString(nil, "OVERLAY", "NumberFontNormalSmall")
-		b.count:SetPoint("BOTTOMRIGHT", 2, -1)
-		b:EnableMouse(true)
-		b:SetScript("OnEnter", function(self)
-			GameTooltip:SetOwner(self, "ANCHOR_BOTTOMRIGHT")
-			GameTooltip:SetUnitAura(f.unit, self.index, filter)
-		end)
-		b:SetScript("OnLeave", GameTooltip_Hide)
-		b:Hide()
-		row[i] = b
+	if hasSecrets then
+		-- Forever: in combat, addons can't read auras at all (every C_UnitAuras read throws while tainted).
+		-- This container is Blizzard's addon-facing way around that: secure code reads them and fills our buttons
+		row.container = CreateFrame("AuraContainer", nil, row, "CustomAuraContainerTemplate")
+		row.container:SetPoint("TOPLEFT")
+		row.container:AddAuraGroup(AURA_GROUP, filter, {
+			maxFrameCount = MAX_AURAS,
+			initializeFrame = function(b)
+				local size = row.size or 22
+				b:SetSize(size, size)
+				local border, icon, count = iconParts(b)
+				b:SetIcon(icon)
+				b:SetApplicationCount(count)
+				-- Same 1px rectangle as border, drawn above it and tinted per type by the game
+				local dispel = b:CreateTexture(nil, "BORDER")
+				dispel:SetAllPoints(border)
+				dispel:SetTexture("Interface\\Buttons\\WHITE8x8")
+				b:AddDispelTypeTexture(dispel, { style = Enum.CustomAuraButtonDispelTypeTextureStyle.PreserveAsset })
+			end,
+		})
+		row.container:SetEnabled(true)
+	else
+		for i = 1, MAX_AURAS do
+			local b = CreateFrame("Frame", nil, row)
+			b.border, b.icon, b.count = iconParts(b)
+			b:EnableMouse(true)
+			b:SetScript("OnEnter", function(self)
+				GameTooltip:SetOwner(self, "ANCHOR_BOTTOMRIGHT")
+				GameTooltip:SetUnitAura(f.unit, self.index, filter)
+			end)
+			b:SetScript("OnLeave", GameTooltip_Hide)
+			b:Hide()
+			row[i] = b
+		end
 	end
 	f.auraRows = f.auraRows or {}
 	table.insert(f.auraRows, row)
@@ -139,26 +176,25 @@ end
 
 local function updateAuras(f)
 	for _, row in ipairs(f.auraRows) do
-		for i, b in ipairs(row) do
-			-- pcall: Forever throws (instead of returning secrets) for units whose auras addons may not read, like enemies
-			-- (not "x and pcall(...)": "and" keeps only pcall's first result, so aura would always be nil)
-			local ok, aura = false, nil
-			if i <= row.max and f.unit then ok, aura = pcall(C_UnitAuras.GetAuraDataByIndex, f.unit, i, row.filter) end
-			if ok and aura then
-				b.index = i
-				b.icon:SetTexture(aura.icon)
-				if hasSecrets then -- secret-safe: returns "" below 2 stacks
-					b.count:SetText(C_UnitAuras.GetAuraApplicationDisplayCount(f.unit, aura.auraInstanceID))
-				else
+		if row.container then -- keeps itself current on UNIT_AURA, this covers unit changes
+			if f.unit then
+				row.container:SetUnit(f.unit)
+				row.container:UpdateAllAuras()
+			end
+		else
+			for i, b in ipairs(row) do
+				local aura = i <= row.max and f.unit and C_UnitAuras.GetAuraDataByIndex(f.unit, i, row.filter)
+				if aura then
+					b.index = i
+					b.icon:SetTexture(aura.icon)
 					b.count:SetText(aura.applications > 1 and aura.applications or "")
+					if row.filter == "HARMFUL" then
+						AuraUtil.SetAuraBorderColor(b.border, aura.dispelName) -- same colors as Blizzard's target debuffs
+					end
+					b:Show()
+				else
+					b:Hide()
 				end
-				if row.filter == "HARMFUL" then
-					-- ponytail: black border when the type is secret; C_UnitAuras.GetAuraDispelTypeColor + a color curve if that matters
-					AuraUtil.SetAuraBorderColor(b.border, not (hasSecrets and issecretvalue(aura.dispelName)) and aura.dispelName or nil) -- same colors as Blizzard's target debuffs
-				end
-				b:Show()
-			else
-				b:Hide()
 			end
 		end
 	end
@@ -186,6 +222,17 @@ local function layout(f)
 				row:SetPoint("TOPLEFT", f, "BOTTOMLEFT", 1, -gap - n * (size + gap))
 			end
 			row:SetSize(1, size)
+			row.size = size
+			if row.container then
+				row.container:SetAuraGroupMaxFrameCount(AURA_GROUP, row.max)
+				row.container:SetAuraGroupLayout(AURA_GROUP, { elementSpacing = gap, elementWidth = size, elementHeight = size })
+				-- ponytail: the buttons are locked in combat; an icon size changed mid-fight applies on the next refresh
+				if not InCombatLockdown() then
+					for i = 1, row.container:GetAuraGroupFrameCount(AURA_GROUP) do
+						row.container:GetAuraGroupFrame(AURA_GROUP, i):SetSize(size, size)
+					end
+				end
+			end
 			for i, b in ipairs(row) do
 				b:SetSize(size, size)
 				b:SetPoint("TOPLEFT", row, "TOPLEFT", (i - 1) * (size + gap), 0)
@@ -251,6 +298,22 @@ for _, f in ipairs({ player, target }) do
 	addRow(f, "debuffs", "HARMFUL")
 end
 
+-- UpdateAll calls Show/Hide, blocked in combat on these secure frames ("Interface action failed because of an AddOn").
+-- RegisterUnitWatch handles visibility anyway, so in combat refresh only what shows the unit's state
+local function update(f)
+	if not InCombatLockdown() then
+		CompactUnitFrame_UpdateAll(f)
+	elseif UnitExists(f.displayedUnit) then
+		CompactUnitFrame_UpdateMaxHealth(f)
+		CompactUnitFrame_UpdateHealth(f) -- also updates the name and health color
+		CompactUnitFrame_UpdateMaxPower(f)
+		CompactUnitFrame_UpdatePower(f)
+		CompactUnitFrame_UpdatePowerColor(f)
+		CompactUnitFrame_UpdateStatusText(f)
+		CompactUnitFrame_UpdateCenterStatusIcon(f)
+	end
+end
+
 local function setup()
 	CompactUnitFrame_SetUpFrame(player, playerSetup)
 	CompactUnitFrame_SetUnit(player, "player")
@@ -263,8 +326,8 @@ local function setup()
 		CompactUnitFrame_SetUnit(f, unit)
 		RegisterUnitWatch(f) -- secure show/hide when the unit exists
 	end
-	-- "targettarget" has no events; Blizzard's own fix for this is polling UpdateAll
-	CompactUnitFrame_SetUpdateAllOnUpdate(tot, true)
+	-- "targettarget" has no events; poll like CompactUnitFrame_SetUpdateAllOnUpdate, but combat-safe
+	CreateFrame("Frame"):SetScript("OnUpdate", function() update(tot) end)
 
 	TargetFrame:UnregisterAllEvents()
 	TargetFrame:SetParent(hidden)
@@ -355,11 +418,15 @@ ev:SetScript("OnEvent", function(self, event, unit)
 	end
 	if event == "PLAYER_TARGET_CHANGED" then
 		if target.unit == "target" then
-			CompactUnitFrame_UpdateAll(target)
+			update(target)
 			target:UpdatePrivateAuras(true) -- aura display only listens to UNIT_AURA, so rebuild it for the new target
 			updateAuras(target)
 			updateLevel()
 		end
+		return
+	end
+	if event == "PLAYER_REGEN_ENABLED" and target.unit then -- set up already: catch up on what combat skipped
+		target:UpdatePrivateAuras(true)
 		return
 	end
 	if InCombatLockdown() then -- /reload mid-combat: protected frames can't change yet
@@ -369,8 +436,9 @@ ev:SetScript("OnEvent", function(self, event, unit)
 	self:UnregisterAllEvents()
 	setup()
 	self:RegisterEvent("PLAYER_TARGET_CHANGED") -- compact frames don't refresh on a new target by themselves
-	self:RegisterUnitEvent("UNIT_AURA", "player", "target")
+	if not hasSecrets then self:RegisterUnitEvent("UNIT_AURA", "player", "target") end
 	self:RegisterUnitEvent("UNIT_LEVEL", "player", "target") -- player too: the color is relative to your level
 	self:RegisterEvent("RAID_TARGET_UPDATE")
+	self:RegisterEvent("PLAYER_REGEN_ENABLED")
 	refresh()
 end)
