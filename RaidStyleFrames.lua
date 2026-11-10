@@ -43,7 +43,7 @@ holder:SetAllPoints()
 
 local function create(name, x, y, template)
 	local f = CreateFrame("Button", name, holder, template)
-	f.groupType = CompactRaidGroupTypeEnum.Raid -- size/border come from the raid frame settings
+	f.groupType = CompactRaidGroupTypeEnum.Party -- size/border/aura layout come from Edit Mode's Party Frames settings
 	-- Flat bars: the raid fill textures are shaded at the edges; health/power colors still tint the plain texture
 	f.healthBar:SetStatusBarTexture("Interface\\Buttons\\WHITE8x8")
 	f.powerBar:SetStatusBarTexture("Interface\\Buttons\\WHITE8x8")
