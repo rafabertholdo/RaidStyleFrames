@@ -2,6 +2,38 @@
 -- WoW Forever has secret values (health, auras): our frames run Blizzard's code tainted, and tainted code
 -- can't compare secrets. Classic Era (1.15) has issecretvalue but no secret health, so key off the version.
 local hasSecrets = select(4, GetBuildInfo()) >= 16000
+
+-- Forever: some units (e.g. a marked enemy, or enemies in an instance) report identity and class as secrets.
+-- Blizzard's health color tests them (UnitIsUnit, RAID_CLASS_COLORS[class]), which throws in our tainted frames.
+-- On a throw, color by reaction instead (hostile/neutral/friendly); the bar's C API takes secrets.
+local function safeColor(f)
+	if not hasSecrets then return CompactUnitFrame_UpdateHealthColor(f) end
+	if not pcall(CompactUnitFrame_UpdateHealthColor, f) then
+		f.healthBar:SetStatusBarColor(UnitSelectionColor(f.unit))
+	end
+end
+-- Health is set before the color throws, so only the color needs redoing
+local function safeHealth(f)
+	if not hasSecrets then return CompactUnitFrame_UpdateHealth(f) end
+	if not pcall(CompactUnitFrame_UpdateHealth, f) then safeColor(f) end
+end
+-- UpdateAll's steps after health: a throw in the health color aborts all of them.
+-- ponytail: mirrors Blizzard's CompactUnitFrame_UpdateAll; re-check if it changes
+local AFTER_HEALTH = { "UpdateMaxPower", "UpdatePower", "UpdatePowerColor", "UpdateAggroHighlight", "UpdateAggroFlash",
+	"UpdateHealthBorder", "UpdateInRange", "UpdateDistance", "UpdateStatusText", "UpdateHealPrediction", "UpdateRoleIcon",
+	"UpdateReadyCheck", "UpdateCenterStatusIcon", "UpdatePlayerLevelDiff", "UpdateWidgetSet", "UpdateLevel" }
+local function safeUpdateAll(f)
+	if not hasSecrets then return CompactUnitFrame_UpdateAll(f) end
+	if pcall(CompactUnitFrame_UpdateAll, f) or not UnitExists(f.displayedUnit) then return end
+	pcall(CompactUnitFrame_UpdateMaxHealth, f)
+	safeHealth(f)
+	for _, name in ipairs(AFTER_HEALTH) do
+		local fn = _G["CompactUnitFrame_" .. name]
+		if fn then pcall(fn, f) end
+	end
+end
+local update -- defined below; Blizzard's event handler falls back to it
+
 local hidden = CreateFrame("Frame")
 hidden:Hide()
 
@@ -42,6 +74,26 @@ local function create(name, x, y, template)
 	f.UpdatePrivateAuras = function(...)
 		if not InCombatLockdown() then return updatePrivateAuras(...) end
 	end
+
+	if hasSecrets then
+		-- Blizzard's own event and OnUpdate handlers on this frame hit the same secrets (see safeColor)
+		local onEvent = f:GetScript("OnEvent")
+		if onEvent then
+			f:SetScript("OnEvent", function(self, ...)
+				if not pcall(onEvent, self, ...) then update(self) end
+			end)
+		end
+		-- A custom OnUpdate replaces CompactUnitFrame_OnUpdate (see CompactUnitFrame_CheckNeedsUpdate).
+		-- ponytail: it then stays registered every frame instead of only when dirty; cheap for 3 frames
+		f.OnUpdate = function(self, elapsed)
+			if not pcall(CompactUnitFrame_OnUpdate, self, elapsed) then
+				self.healthDirty = false -- health was set before the color threw; don't retry it every frame
+				safeColor(self)
+				pcall(CompactUnitFrame_OnUpdate, self, elapsed) -- the rest of it
+			end
+		end
+		CompactUnitFrame_CheckNeedsUpdate(f)
+	end
 	return f
 end
 
@@ -51,6 +103,26 @@ local target = create("RaidStyleTargetFrame", 250, -150, "CompactRaidGroupUnitFr
 -- ponytail: no auras on target of target, the game sends no aura events for "targettarget"
 local tot = create("RaidStyleTargetTargetFrame", 420, -150, "CompactUnitFrameTemplate")
 local watched = { [target] = "target", [tot] = "targettarget" }
+
+-- Pulsing yellow glow while resting, like the Blizzard player frame we hide. Raid aggro glow, desaturated and tinted
+-- to Blizzard's rest color (PlayerFrame_UpdateStatus)
+local restGlow = player:CreateTexture(nil, "OVERLAY")
+restGlow:SetAtlas("RaidFrame-AgroFrame")
+restGlow:SetAllPoints()
+restGlow:SetDesaturated(true)
+restGlow:SetVertexColor(1.0, 0.88, 0.25)
+restGlow:Hide()
+local pulse = restGlow:CreateAnimationGroup()
+pulse:SetLooping("BOUNCE")
+local fade = pulse:CreateAnimation("Alpha")
+fade:SetFromAlpha(1)
+fade:SetToAlpha(0.15)
+fade:SetDuration(0.5)
+local function updateResting()
+	local resting = IsResting()
+	restGlow:SetShown(resting)
+	if resting then pulse:Play() else pulse:Stop() end
+end
 
 -- Own option tables with no re-layout on every update: the default re-layout calls SetSize,
 -- which is blocked in combat on addon frames, and would put the in-frame debuffs back
@@ -65,6 +137,8 @@ local function makeSetup(options)
 	end })
 	options.updateAllSetupFunc = false -- false, not nil, so it doesn't fall through to Blizzard's
 	options.fadeOutOfRange = false -- UnitInRange is secret on Forever, and only works for group members anyway
+	-- The target highlight tests UnitIsUnit(unit, "target"), secret on Forever. Our target frame is always the target anyway
+	if hasSecrets then options.displaySelectionHighlight = false end
 	return function(frame)
 		DefaultCompactUnitFrameSetup(frame)
 		frame.updateAllSetupFunc = nil -- Forever keeps the re-layout on the frame (Era on the option table above)
@@ -107,7 +181,7 @@ local targetSetup = makeSetup({ allowClassColorsForNPCs = false })
 local function recolor()
 	C_Timer.After(0, function()
 		for _, f in ipairs({ player, target, tot }) do
-			if f.unit and UnitExists(f.unit) then CompactUnitFrame_UpdateHealthColor(f) end
+			if f.unit and UnitExists(f.unit) then safeColor(f) end
 		end
 	end)
 end
@@ -300,12 +374,12 @@ end
 
 -- UpdateAll calls Show/Hide, blocked in combat on these secure frames ("Interface action failed because of an AddOn").
 -- RegisterUnitWatch handles visibility anyway, so in combat refresh only what shows the unit's state
-local function update(f)
+function update(f)
 	if not InCombatLockdown() then
-		CompactUnitFrame_UpdateAll(f)
+		safeUpdateAll(f)
 	elseif UnitExists(f.displayedUnit) then
 		CompactUnitFrame_UpdateMaxHealth(f)
-		CompactUnitFrame_UpdateHealth(f) -- also updates the name and health color
+		safeHealth(f) -- also updates the name and health color
 		CompactUnitFrame_UpdateMaxPower(f)
 		CompactUnitFrame_UpdatePower(f)
 		CompactUnitFrame_UpdatePowerColor(f)
@@ -416,6 +490,10 @@ ev:SetScript("OnEvent", function(self, event, unit)
 		updateMarker()
 		return
 	end
+	if event == "PLAYER_UPDATE_RESTING" then
+		updateResting()
+		return
+	end
 	if event == "PLAYER_TARGET_CHANGED" then
 		if target.unit == "target" then
 			update(target)
@@ -439,6 +517,8 @@ ev:SetScript("OnEvent", function(self, event, unit)
 	if not hasSecrets then self:RegisterUnitEvent("UNIT_AURA", "player", "target") end
 	self:RegisterUnitEvent("UNIT_LEVEL", "player", "target") -- player too: the color is relative to your level
 	self:RegisterEvent("RAID_TARGET_UPDATE")
+	self:RegisterEvent("PLAYER_UPDATE_RESTING")
 	self:RegisterEvent("PLAYER_REGEN_ENABLED")
 	refresh()
+	updateResting()
 end)
